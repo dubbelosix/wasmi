@@ -14,6 +14,7 @@ pub struct ByteBuffer {
     len: usize,
     capacity: usize,
     is_static: bool,
+    read_only: bool, // New field to enforce read-only behavior
 }
 
 // Safety: `ByteBuffer` is essentially an enum of `Vec<u8>` or `&'static mut [u8]`.
@@ -35,10 +36,11 @@ impl ByteBuffer {
             len,
             capacity,
             is_static: false,
+            read_only: false,
         }
     }
 
-    /// Creates a new byte buffer with the given initial length.
+    /// Creates a new static byte buffer with the given initial length.
     ///
     /// # Errors
     ///
@@ -52,6 +54,7 @@ impl ByteBuffer {
             len: initial_len,
             capacity: buf.len(),
             is_static: true,
+            read_only: false,
         }
     }
 
@@ -60,12 +63,15 @@ impl ByteBuffer {
     /// # Panics
     ///
     /// - If the current size of the [`ByteBuffer`] is larger than `new_size`.
-    /// - If backed by static buffer and `new_size` is larger than it's capacity.
+    /// - If backed by static buffer and `new_size` is larger than its capacity.
     pub fn grow(&mut self, new_size: usize) {
         assert!(new_size >= self.len());
+        if self.read_only {
+            panic!("Cannot grow a read-only ByteBuffer");
+        }
         if self.is_static {
             if self.capacity < new_size {
-                panic!("Cannot grow static byte buffer more then it's capacity")
+                panic!("Cannot grow static byte buffer more than its capacity");
             }
             let len = self.len();
             self.len = new_size;
@@ -87,16 +93,30 @@ impl ByteBuffer {
         self.len
     }
 
-    /// Returns a shared slice to the bytes underlying to the byte buffer.
+    /// Returns a shared slice to the bytes underlying the byte buffer.
     pub fn data(&self) -> &[u8] {
         // Safety: either is backed by a `Vec` or a static buffer, ptr[0..len] is valid.
         unsafe { core::slice::from_raw_parts(self.ptr, self.len) }
     }
 
-    /// Returns an exclusive slice to the bytes underlying to the byte buffer.
+    /// Returns an exclusive slice to the bytes underlying the byte buffer.
+    /// Panics if the buffer is read-only.
     pub fn data_mut(&mut self) -> &mut [u8] {
+        if self.read_only {
+            panic!("Attempted to write to a read-only ByteBuffer");
+        }
         // Safety: either is backed by a `Vec` or a static buffer, ptr[0..len] is valid.
         unsafe { core::slice::from_raw_parts_mut(self.ptr, self.len) }
+    }
+
+    /// Marks the buffer as read-only.
+    pub fn set_read_only(&mut self, read_only: bool) {
+        self.read_only = read_only;
+    }
+
+    /// Returns whether the buffer is read-only.
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
     }
 }
 
@@ -177,4 +197,28 @@ mod test {
         let mut buffer = ByteBuffer::new_static(buf, 5);
         buffer.grow(10); // This should panic.
     }
+
+    #[test]
+    #[should_panic(expected = "Attempted to write to a read-only ByteBuffer")]
+    fn test_read_only_behavior_should_panic() {
+        static mut BUF: [u8; 10] = [7; 10];
+        let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
+        let mut buffer = ByteBuffer::new_static(buf, 5);
+        buffer.set_read_only(true);
+
+        let data = buffer.data_mut();
+        data[0] = 42;
+    }
+
+    #[test]
+    #[should_panic(expected = "Cannot grow a read-only ByteBuffer")]
+    fn test_read_only_grow_should_panic() {
+        static mut BUF: [u8; 10] = [7; 10];
+        let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
+        let mut buffer = ByteBuffer::new_static(buf, 5);
+        buffer.set_read_only(true);
+
+        buffer.grow(6);
+    }
+
 }
